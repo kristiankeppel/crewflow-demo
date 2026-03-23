@@ -32,33 +32,39 @@ const {
   validateSwapProposal,
 } = window.CrewFlowEngine;
 
-const STORAGE_KEY = "crewflow-demo-state-v1";
+const STORAGE_KEY = "crewflow-demo-state-v2";
 const root = document.getElementById("app");
 
 const formatters = {
   month: new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }),
-  weekday: new Intl.DateTimeFormat(undefined, { weekday: "short" }),
+  shortDate: new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }),
   fullDate: new Intl.DateTimeFormat(undefined, {
     weekday: "short",
     month: "short",
     day: "numeric",
   }),
-  shortDate: new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-  }),
+  weekday: new Intl.DateTimeFormat(undefined, { weekday: "short" }),
   time: new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   }),
 };
 
+const TAB_LABELS = {
+  calendar: "Calendar",
+  marketplace: "Marketplace",
+  requests: "Requests",
+  profile: "Profile",
+};
+
 let state = loadState();
+let swipeState = null;
 
 root.addEventListener("click", handleClick);
 root.addEventListener("submit", handleSubmit);
-root.addEventListener("input", handleInput);
 root.addEventListener("change", handleChange);
+root.addEventListener("touchstart", handleTouchStart, { passive: true });
+root.addEventListener("touchend", handleTouchEnd, { passive: true });
 
 render();
 
@@ -78,6 +84,7 @@ function loadState() {
         ...blank.marketplaceFilters,
         ...(parsed.marketplaceFilters || {}),
       },
+      sheet: parsed.sheet || null,
     };
   } catch (error) {
     return blank;
@@ -88,14 +95,15 @@ function saveState() {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function render() {
-  root.innerHTML = state.profile ? renderDashboard() : renderOnboarding();
-  syncOnboardingVisibility();
-}
-
 function commit() {
   saveState();
   render();
+}
+
+function render() {
+  document.body.dataset.theme = state.theme || "dark";
+  root.innerHTML = state.profile ? renderAppShell() : renderOnboarding();
+  syncOnboardingVisibility();
 }
 
 function escapeHtml(value = "") {
@@ -109,12 +117,9 @@ function escapeHtml(value = "") {
 
 function nowLocalDateTime() {
   const current = new Date();
-  const year = current.getFullYear();
-  const month = String(current.getMonth() + 1).padStart(2, "0");
-  const day = String(current.getDate()).padStart(2, "0");
-  const hours = String(current.getHours()).padStart(2, "0");
-  const minutes = String(current.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+  return `${toIsoDate(current)}T${String(current.getHours()).padStart(2, "0")}:${String(
+    current.getMinutes(),
+  ).padStart(2, "0")}`;
 }
 
 function toIsoDate(date) {
@@ -130,16 +135,27 @@ function parseDate(value) {
 
 function shiftMonth(monthString, offset) {
   const [year, month] = monthString.split("-").map(Number);
-  const value = new Date(year, month - 1 + offset, 1);
-  return toIsoDate(value).slice(0, 7);
+  const date = new Date(year, month - 1 + offset, 1);
+  return toIsoDate(date).slice(0, 7);
 }
 
-function startOfWeek(dateString) {
-  const source = new Date(`${dateString}T12:00`);
-  const day = source.getDay();
-  const normalized = day === 0 ? -6 : 1 - day;
-  source.setDate(source.getDate() + normalized);
-  return source;
+function formatMonth(monthString) {
+  const [year, month] = monthString.split("-").map(Number);
+  return formatters.month.format(new Date(year, month - 1, 1));
+}
+
+function formatDate(dateString) {
+  return formatters.fullDate.format(new Date(`${dateString}T12:00`));
+}
+
+function formatShortDate(dateString) {
+  return formatters.shortDate.format(new Date(`${dateString}T12:00`));
+}
+
+function formatTimeRange(startValue, endValue) {
+  return `${formatters.time.format(parseDate(startValue))} - ${formatters.time.format(
+    parseDate(endValue),
+  )}`;
 }
 
 function getCurrentUser() {
@@ -156,7 +172,6 @@ function ensureSelectedFlight() {
     state.selectedMyFlightId = "";
     return;
   }
-
   if (!myFlights.some((flight) => flight.id === state.selectedMyFlightId)) {
     state.selectedMyFlightId = myFlights[0].id;
   }
@@ -166,13 +181,13 @@ function setBanner(type, text) {
   state.banner = { type, text };
 }
 
-function addNotification(type, title, body, relatedId = "") {
+function addNotification(type, title, body, relatedId) {
   state.notifications.unshift({
     id: `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     type,
     title,
     body,
-    relatedId,
+    relatedId: relatedId || "",
     createdAt: nowLocalDateTime(),
     read: false,
   });
@@ -185,29 +200,6 @@ function addAudit(action, detail) {
     action,
     detail,
   });
-}
-
-function createStatusPill(tone, label) {
-  return `<span class="status-pill status-pill--${tone}">${escapeHtml(label)}</span>`;
-}
-
-function formatDate(dateString) {
-  return formatters.fullDate.format(new Date(`${dateString}T12:00`));
-}
-
-function formatMonth(monthString) {
-  const [year, month] = monthString.split("-").map(Number);
-  return formatters.month.format(new Date(year, month - 1, 1));
-}
-
-function formatShortDate(dateString) {
-  return formatters.shortDate.format(new Date(`${dateString}T12:00`));
-}
-
-function formatTimeRange(startValue, endValue) {
-  return `${formatters.time.format(parseDate(startValue))} - ${formatters.time.format(
-    parseDate(endValue),
-  )}`;
 }
 
 function getDepartureWindow(departureTime) {
@@ -224,8 +216,8 @@ function getDepartureWindow(departureTime) {
 function filterMarketplacePosts(posts) {
   const filters = state.marketplaceFilters;
   const layoverNeedle = filters.layover.trim().toLowerCase();
-
-  return posts.filter(({ flight }) => {
+  return posts.filter(function (entry) {
+    const flight = entry.flight;
     if (filters.date && flight.date !== filters.date) {
       return false;
     }
@@ -257,83 +249,121 @@ function filterMarketplacePosts(posts) {
   });
 }
 
+function getFlightSwapSummary(flightId) {
+  const eligibleCandidates = getSwapCandidates(state, "me", flightId).filter(function (candidate) {
+    return candidate.validation.eligible;
+  });
+  return {
+    count: eligibleCandidates.length,
+    topMatches: eligibleCandidates.slice(0, 3),
+  };
+}
+
+function findOpenPostByFlightId(flightId) {
+  return state.openTimePosts.find(function (post) {
+    return post.flightId === flightId && post.status === "open";
+  });
+}
+
+function getCompletedRequests() {
+  return state.swapRequests
+    .filter(function (request) {
+      return request.status !== "pending";
+    })
+    .map(function (request) {
+      return {
+        request: request,
+        requester: getUserById(state, request.requesterId),
+        targetUser: getUserById(state, request.targetUserId),
+        requesterFlight: getFlightById(state, request.requesterFlightId),
+        targetFlight: getFlightById(state, request.targetFlightId),
+      };
+    })
+    .sort(function (left, right) {
+      return parseDate(right.request.createdAt).getTime() - parseDate(left.request.createdAt).getTime();
+    });
+}
+
+function getIncomingRequestRows() {
+  return getIncomingSwapRequests(state, "me");
+}
+
+function getOutgoingRequestRows() {
+  return getOutgoingSwapRequests(state, "me");
+}
+
 function renderOnboarding() {
   const defaults = createDefaultProfile();
-
   return `
-    <section class="card landing-card">
-      <div class="landing-copy">
-        <p class="eyebrow">Crew onboarding</p>
-        <h2>Set up a legal roster view in under a minute.</h2>
+    <section class="auth-shell">
+      <div class="auth-copy">
+        <p class="eyebrow">CrewFlow</p>
+        <h2>The fastest way for crew to trade, offer, and protect legal flying.</h2>
         <p>
-          This demo starts with a verified crew profile, loads a sample month,
-          and turns on the legality engine for every open-time and swap action.
+          Built for quick roster decisions between flights, on layovers, and during turnarounds.
+          Load the demo profile to explore the dark-mode mobile experience.
         </p>
-        <div class="landing-metrics">
-          <div class="mini-stat">
-            <strong>Zero</strong>
-            <span>illegal swaps can pass approval</span>
+        <div class="hero-points">
+          <div class="hero-point">
+            <strong>30 sec</strong>
+            <span>target time to find and send a swap</span>
           </div>
-          <div class="mini-stat">
-            <strong>&lt; 60s</strong>
-            <span>to request a swap from the dashboard</span>
+          <div class="hero-point">
+            <strong>4 tabs</strong>
+            <span>calendar, marketplace, requests, profile</span>
           </div>
-          <div class="mini-stat">
-            <strong>Web + Mobile</strong>
-            <span>responsive cockpit-style experience</span>
+          <div class="hero-point">
+            <strong>0 illegal</strong>
+            <span>swaps allowed through the rule engine</span>
           </div>
         </div>
       </div>
-      <form class="panel-form onboarding-form" data-form="onboarding">
-        <div class="panel-heading">
+      <form class="panel-card onboarding-card" data-form="onboarding">
+        <div class="panel-head">
           <div>
-            <p class="eyebrow">Profile</p>
-            <h3>Build your crew identity</h3>
+            <p class="eyebrow">Sign In</p>
+            <h3>Load a verified crew profile</h3>
           </div>
-          <p class="panel-note">Email verification is captured here and company verification is ready to extend later.</p>
+          <p class="muted">Email verification now, company verification later.</p>
         </div>
         <label class="field">
           <span>Role</span>
           <select name="role">
-            ${ROLE_OPTIONS.map(
-              (role) =>
-                `<option value="${role}" ${
-                  role === defaults.role ? "selected" : ""
-                }>${escapeHtml(role)}</option>`,
-            ).join("")}
+            ${ROLE_OPTIONS.map(function (role) {
+              return `<option value="${role}" ${
+                role === defaults.role ? "selected" : ""
+              }>${escapeHtml(role)}</option>`;
+            }).join("")}
           </select>
         </label>
         <label class="field" data-position-field>
           <span>Pilot position</span>
           <select name="position">
-            ${PILOT_POSITIONS.map(
-              (position) =>
-                `<option value="${position}" ${
-                  position === defaults.position ? "selected" : ""
-                }>${escapeHtml(position)}</option>`,
-            ).join("")}
+            ${PILOT_POSITIONS.map(function (position) {
+              return `<option value="${position}" ${
+                position === defaults.position ? "selected" : ""
+              }>${escapeHtml(position)}</option>`;
+            }).join("")}
           </select>
         </label>
         <label class="field">
           <span>Base</span>
           <select name="base">
-            ${BASE_OPTIONS.map(
-              (base) =>
-                `<option value="${base}" ${
-                  base === defaults.base ? "selected" : ""
-                }>${escapeHtml(base)}</option>`,
-            ).join("")}
+            ${BASE_OPTIONS.map(function (base) {
+              return `<option value="${base}" ${
+                base === defaults.base ? "selected" : ""
+              }>${escapeHtml(base)}</option>`;
+            }).join("")}
           </select>
         </label>
         <label class="field">
-          <span>Aircraft type / fleet</span>
+          <span>Fleet</span>
           <select name="fleet">
-            ${FLEET_OPTIONS.map(
-              (fleet) =>
-                `<option value="${fleet}" ${
-                  fleet === defaults.fleet ? "selected" : ""
-                }>${escapeHtml(fleet)}</option>`,
-            ).join("")}
+            ${FLEET_OPTIONS.map(function (fleet) {
+              return `<option value="${fleet}" ${
+                fleet === defaults.fleet ? "selected" : ""
+              }>${escapeHtml(fleet)}</option>`;
+            }).join("")}
           </select>
         </label>
         <label class="field">
@@ -348,833 +378,994 @@ function renderOnboarding() {
           <span>Airline</span>
           <input type="text" name="airline" value="${escapeHtml(defaults.airline)}" />
         </label>
-        <button class="button button--primary" type="submit">Load demo roster</button>
+        <button class="button button--primary" type="submit">Open CrewFlow Demo</button>
       </form>
     </section>
   `;
 }
 
-function renderDashboard() {
+function renderAppShell() {
   ensureSelectedFlight();
-
   const me = getCurrentUser();
-  const myFlights = getUserFlights(state, "me");
   const metrics = getScheduleMetrics(state, "me");
-  const selectedFlight = getSelectedFlight() || myFlights[0];
-  const selectedDate =
-    state.selectedDate ||
-    (myFlights[0] ? myFlights[0].date : "") ||
-    state.currentMonth;
-  const selectedDateFlights = getFlightsForDate(state, "me", selectedDate);
-  const selectedStatuses = getStatusesForDate(state, "me", selectedDate);
-  const allMarketplacePosts = getVisibleMarketplacePosts(state, "me");
-  const marketplacePosts = filterMarketplacePosts(allMarketplacePosts);
-  const hiddenCount = countHiddenMarketplacePosts(state, "me");
-  const swapCandidates = selectedFlight
-    ? getSwapCandidates(state, "me", selectedFlight.id).slice(0, 8)
-    : [];
-  const recommendedSwaps = selectedFlight
-    ? getRecommendedSwaps(state, "me", selectedFlight.id)
-    : [];
-  const incomingRequests = getIncomingSwapRequests(state, "me");
-  const outgoingRequests = getOutgoingSwapRequests(state, "me");
-  const dayMatches = getDaySwapMatches(state, "me", selectedDate).slice(0, 5);
   const notifications = getNotifications(state);
-  const cabinLabel = me.role === "Pilot" ? me.position : "Cabin Crew";
+  const unreadCount = notifications.filter(function (note) {
+    return !note.read;
+  }).length;
 
   return `
     ${renderBanner()}
-    <section class="card hero-card">
-      <div class="hero-copy">
-        <p class="eyebrow">Active profile</p>
-        <h2>${escapeHtml(me.role)} ${escapeHtml(cabinLabel)} · ${escapeHtml(me.base)}</h2>
-        <p>
-          ${escapeHtml(me.airline)} roster loaded for ${escapeHtml(me.fleet)} operations. Swaps, open time pickup requests, and approvals are being screened against rest, duty, flight time, base, and qualification rules.
-        </p>
-        <div class="hero-chips">
-          ${createStatusPill("info", me.role)}
-          ${createStatusPill("info", cabinLabel)}
-          ${createStatusPill("info", me.base)}
-          ${createStatusPill("info", me.fleet)}
-          ${createStatusPill(metrics.legal ? "available" : "conflict", metrics.legal ? "Compliant" : "Review needed")}
+    <section class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Roster Live</p>
+          <h2>${escapeHtml(TAB_LABELS[state.activeTab] || "Calendar")}</h2>
+          <p class="screen-subtitle">${escapeHtml(me.base)} base · ${escapeHtml(
+            me.fleet,
+          )} · ${escapeHtml(me.role === "Pilot" ? me.position : "Flight Attendant")}</p>
         </div>
+        <div class="header-pills">
+          ${renderStatusPill(metrics.legal ? "available" : "conflict", metrics.legal ? "Legal" : "Review")}
+          ${renderStatusPill("info", `${unreadCount} alerts`)}
+        </div>
+      </header>
+      <div class="screen-frame">
+        ${renderActiveScreen()}
       </div>
-      <div class="hero-actions">
-        <button class="button button--primary" type="button" data-action="jump-next-flight">Jump to next duty</button>
-        <button class="button button--ghost" type="button" data-action="reset-demo">Start over</button>
-      </div>
+      <nav class="tabbar" aria-label="Primary">
+        ${renderTabButton("calendar", "Calendar", unreadCount)}
+        ${renderTabButton("marketplace", "Marketplace", 0)}
+        ${renderTabButton("requests", "Requests", metrics.pendingIncoming)}
+        ${renderTabButton("profile", "Profile", 0)}
+      </nav>
     </section>
-
-    <section class="stats-row">
-      ${renderStatCard("Assigned duties", String(metrics.dutyCount), "Your active monthly flying roster")}
-      ${renderStatCard("Open time fits", String(metrics.matchingOpenTime), "Qualified duties ready to request")}
-      ${renderStatCard("Pending approvals", String(metrics.pendingIncoming), "Requests waiting on your decision")}
-      ${renderStatCard("Rule set", state.rules.allowCrossBase ? "Cross-base on" : "Base locked", "Policy controls recalculate instantly")}
-    </section>
-
-    <div class="dashboard-grid">
-      <section class="card card--wide">
-        ${renderCalendarCard(selectedDate)}
-      </section>
-      <aside class="card card--sidebar">
-        ${renderDayDetailCard(selectedDate, selectedDateFlights, selectedStatuses, dayMatches)}
-      </aside>
-      <section class="card card--wide">
-        ${renderMarketplaceCard(marketplacePosts, hiddenCount)}
-      </section>
-      <section class="card card--sidebar">
-        ${renderSwapCenter(selectedFlight, swapCandidates, recommendedSwaps)}
-      </section>
-      <section class="card card--half">
-        ${renderRequestsCard(incomingRequests, outgoingRequests)}
-      </section>
-      <section class="card card--half">
-        ${renderNotificationCard(notifications)}
-      </section>
-      <section class="card card--half">
-        ${renderRulesCard()}
-      </section>
-      <section class="card card--half">
-        ${renderAuditCard()}
-      </section>
-    </div>
+    ${renderBottomSheet()}
   `;
+}
+
+function renderActiveScreen() {
+  if (state.activeTab === "marketplace") {
+    return renderMarketplaceScreen();
+  }
+  if (state.activeTab === "requests") {
+    return renderRequestsScreen();
+  }
+  if (state.activeTab === "profile") {
+    return renderProfileScreen();
+  }
+  return renderCalendarScreen();
 }
 
 function renderBanner() {
   if (!state.banner) {
     return "";
   }
-
   return `
-    <section class="banner banner--${escapeHtml(state.banner.type)}">
+    <section class="inline-banner inline-banner--${escapeHtml(state.banner.type)}">
       <p>${escapeHtml(state.banner.text)}</p>
-      <button type="button" class="button button--ghost button--small" data-action="dismiss-banner">Dismiss</button>
+      <button type="button" class="button button--ghost button--small" data-action="dismiss-banner">
+        Dismiss
+      </button>
     </section>
   `;
 }
 
-function renderStatCard(label, value, detail) {
+function renderTabButton(tab, label, count) {
   return `
-    <article class="card stat-card">
-      <span class="stat-card__label">${escapeHtml(label)}</span>
-      <strong class="stat-card__value">${escapeHtml(value)}</strong>
-      <p class="stat-card__detail">${escapeHtml(detail)}</p>
-    </article>
+    <button
+      type="button"
+      class="tabbar__button ${state.activeTab === tab ? "is-active" : ""}"
+      data-action="set-tab"
+      data-tab="${tab}"
+    >
+      <span class="tabbar__label">${escapeHtml(label)}</span>
+      ${count ? `<span class="tabbar__count">${count}</span>` : ""}
+    </button>
   `;
 }
 
-function renderCalendarCard(selectedDate) {
+function renderCalendarScreen() {
+  const myFlights = getUserFlights(state, "me");
+  const selectedDate =
+    state.selectedDate ||
+    (myFlights[0] ? myFlights[0].date : "") ||
+    `${state.currentMonth}-01`;
+  const selectedFlights = getFlightsForDate(state, "me", selectedDate);
+  const selectedStatuses = getStatusesForDate(state, "me", selectedDate);
+  const dayMatches = getDaySwapMatches(state, "me", selectedDate).filter(function (candidate) {
+    return candidate.validation.eligible;
+  });
+  const nextFlight = myFlights.find(function (flight) {
+    return flight.date >= toIsoDate(new Date());
+  }) || myFlights[0];
+  const metrics = getScheduleMetrics(state, "me");
+
   return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Schedule</p>
-        <h3>${escapeHtml(formatMonth(state.currentMonth))}</h3>
+    <section class="screen-stack">
+      <div class="summary-strip">
+        <article class="summary-card">
+          <span class="summary-card__label">Next duty</span>
+          <strong>${escapeHtml(nextFlight ? nextFlight.flightNumber : "No duty")}</strong>
+          <span>${escapeHtml(nextFlight ? formatShortDate(nextFlight.date) : "Roster clear")}</span>
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">Open fits</span>
+          <strong>${metrics.matchingOpenTime}</strong>
+          <span>ready to request</span>
+        </article>
+        <article class="summary-card">
+          <span class="summary-card__label">Pending</span>
+          <strong>${metrics.pendingIncoming}</strong>
+          <span>waiting on you</span>
+        </article>
       </div>
-      <div class="section-actions">
-        <button type="button" class="button button--ghost button--small" data-action="prev-month">Prev</button>
-        <button type="button" class="button button--ghost button--small" data-action="next-month">Next</button>
-        <button type="button" class="button ${
-          state.calendarMode === "month" ? "button--primary" : "button--ghost"
-        } button--small" data-action="toggle-calendar" data-mode="month">Month</button>
-        <button type="button" class="button ${
-          state.calendarMode === "week" ? "button--primary" : "button--ghost"
-        } button--small" data-action="toggle-calendar" data-mode="week">Week</button>
-      </div>
-    </div>
-    <div class="legend">
-      ${createStatusPill("available", "Available")}
-      ${createStatusPill("pending", "Pending")}
-      ${createStatusPill("conflict", "Conflict")}
-      ${createStatusPill("info", "Reserve / Off")}
-    </div>
-    ${
-      state.calendarMode === "month"
-        ? renderMonthGrid(selectedDate)
-        : renderWeekStrip(selectedDate)
-    }
+
+      <section class="panel-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Monthly View</p>
+            <h3>${escapeHtml(formatMonth(state.currentMonth))}</h3>
+          </div>
+          <div class="toolbar">
+            <button type="button" class="button button--ghost button--small" data-action="prev-month">Prev</button>
+            <button type="button" class="button button--ghost button--small" data-action="jump-today">Today</button>
+            <button type="button" class="button button--ghost button--small" data-action="next-month">Next</button>
+          </div>
+        </div>
+        ${renderCalendarGrid(selectedDate)}
+      </section>
+
+      <section class="panel-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Daily View</p>
+            <h3>${escapeHtml(formatDate(selectedDate))}</h3>
+          </div>
+          ${renderStatusPill("info", selectedFlights.length ? `${selectedFlights.length} duty` : "Off day")}
+        </div>
+        <div class="daily-stack">
+          ${
+            selectedStatuses.length
+              ? `<div class="pill-row">${selectedStatuses
+                  .map(function (status) {
+                    return renderStatusPill("off", status.label);
+                  })
+                  .join("")}</div>`
+              : ""
+          }
+          ${
+            selectedFlights.length
+              ? selectedFlights.map(renderRosterFlightCard).join("")
+              : `<article class="offday-card">
+                  <strong>${selectedStatuses.length ? escapeHtml(selectedStatuses[0].label) : "No assigned flight"}</strong>
+                  <p>${selectedStatuses.length ? "Your roster is protected for this day." : "Tap another day in the calendar to inspect duty details."}</p>
+                </article>`
+          }
+          <div class="match-strip">
+            <div class="subhead">
+              <h4>Best swap matches</h4>
+              <span>${dayMatches.length}</span>
+            </div>
+            ${
+              dayMatches.length
+                ? dayMatches
+                    .slice(0, 3)
+                    .map(function (candidate) {
+                      return renderMiniMatch(candidate);
+                    })
+                    .join("")
+                : `<p class="muted">No same-day legal swaps are available for this date yet.</p>`
+            }
+          </div>
+        </div>
+      </section>
+    </section>
   `;
 }
 
-function renderMonthGrid(selectedDate) {
+function renderCalendarGrid(selectedDate) {
   const [year, month] = state.currentMonth.split("-").map(Number);
-  const firstDay = new Date(year, month - 1, 1);
-  const firstDayIndex = (firstDay.getDay() + 6) % 7;
+  const first = new Date(year, month - 1, 1);
   const totalDays = new Date(year, month, 0).getDate();
-  const totalCells = Math.ceil((firstDayIndex + totalDays) / 7) * 7;
+  const offset = (first.getDay() + 6) % 7;
   const cells = [];
+  const totalCells = Math.ceil((offset + totalDays) / 7) * 7;
 
   for (let index = 0; index < totalCells; index += 1) {
-    const cellDate = new Date(year, month - 1, 1 - firstDayIndex + index);
-    const isoDate = toIsoDate(cellDate);
-    const inMonth = cellDate.getMonth() === month - 1;
-    cells.push(renderCalendarCell(isoDate, inMonth, selectedDate));
+    const date = new Date(year, month - 1, 1 - offset + index);
+    const isoDate = toIsoDate(date);
+    const inMonth = date.getMonth() === month - 1;
+    const flights = getFlightsForDate(state, "me", isoDate);
+    const statuses = getStatusesForDate(state, "me", isoDate);
+    const swapReady = flights.some(function (flight) {
+      return getFlightSwapSummary(flight.id).count > 0;
+    });
+    let tone = "empty";
+    let note = "";
+
+    if (statuses.length) {
+      tone = "off";
+      note = statuses[0].label;
+    }
+    if (flights.length) {
+      tone = swapReady ? "swap" : "assigned";
+      note = flights[0].flightNumber;
+    }
+
+    cells.push(`
+      <button
+        type="button"
+        class="calendar-day ${inMonth ? "" : "is-muted"} ${selectedDate === isoDate ? "is-selected" : ""} tone-${tone}"
+        data-action="select-date"
+        data-date="${isoDate}"
+      >
+        <span class="calendar-day__number">${date.getDate()}</span>
+        <span class="calendar-day__note">${escapeHtml(note || "")}</span>
+        ${flights.length ? `<span class="calendar-day__count">${flights.length}</span>` : ""}
+      </button>
+    `);
   }
 
   return `
-    <div class="calendar-grid calendar-grid--header">
+    <div class="calendar-weekdays">
       ${["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        .map((label) => `<span>${label}</span>`)
+        .map(function (label) {
+          return `<span>${label}</span>`;
+        })
         .join("")}
     </div>
     <div class="calendar-grid">${cells.join("")}</div>
   `;
 }
 
-function renderWeekStrip(selectedDate) {
-  const start = startOfWeek(selectedDate);
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const value = new Date(start);
-    value.setDate(start.getDate() + index);
-    const isoDate = toIsoDate(value);
-    const flights = getFlightsForDate(state, "me", isoDate);
-    const statuses = getStatusesForDate(state, "me", isoDate);
-    return `
-      <button type="button" class="week-day ${
-        isoDate === selectedDate ? "is-selected" : ""
-      }" data-action="select-date" data-date="${isoDate}">
-        <div>
-          <span class="week-day__weekday">${escapeHtml(
-            formatters.weekday.format(value),
-          )}</span>
-          <strong>${escapeHtml(formatShortDate(isoDate))}</strong>
-        </div>
-        <div class="week-day__summary">
-          ${
-            flights.length
-              ? `<span>${flights.length} duty${flights.length > 1 ? "ies" : ""}</span>`
-              : `<span>No flights</span>`
-          }
-          ${
-            statuses.length
-              ? `<span>${escapeHtml(statuses.map((status) => status.label).join(" · "))}</span>`
-              : ""
-          }
-        </div>
-      </button>
-    `;
-  });
-
-  return `<div class="week-strip">${days.join("")}</div>`;
-}
-
-function renderCalendarCell(date, inMonth, selectedDate) {
-  const flights = getFlightsForDate(state, "me", date);
-  const statuses = getStatusesForDate(state, "me", date);
-  const isToday = date === toIsoDate(new Date());
-  const isSelected = date === selectedDate;
-  const preview = [...flights.map((flight) => flight.flightNumber), ...statuses.map((status) => status.label)].slice(0, 2);
-  const extraCount = flights.length + statuses.length - preview.length;
-
+function renderRosterFlightCard(flight) {
+  const summary = getFlightSwapSummary(flight.id);
+  const tone = summary.count ? "swap" : "assigned";
   return `
-    <button type="button" class="calendar-cell ${inMonth ? "" : "is-muted"} ${
-      isSelected ? "is-selected" : ""
-    } ${isToday ? "is-today" : ""}" data-action="select-date" data-date="${date}">
-      <div class="calendar-cell__top">
-        <span class="calendar-cell__day">${new Date(`${date}T12:00`).getDate()}</span>
-        ${
-          flights.length
-            ? `<span class="calendar-cell__count">${flights.length}</span>`
-            : ""
-        }
-      </div>
-      <div class="calendar-cell__events">
-        ${preview
-          .map((item) =>
-            `<span class="event-pill ${
-              item === "Reserve" || item === "Day Off" ? "event-pill--info" : "event-pill--flight"
-            }">${escapeHtml(item)}</span>`,
-          )
-          .join("")}
-        ${extraCount > 0 ? `<span class="event-pill event-pill--more">+${extraCount}</span>` : ""}
-      </div>
-    </button>
-  `;
-}
-
-function renderDayDetailCard(selectedDate, flights, statuses, dayMatches) {
-  const selectedFlight = getSelectedFlight();
-  return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Day details</p>
-        <h3>${escapeHtml(formatDate(selectedDate))}</h3>
-      </div>
-    </div>
-    <div class="stack">
-      ${
-        statuses.length
-          ? `<div class="chip-row">${statuses
-              .map((status) => createStatusPill("info", status.label))
-              .join("")}</div>`
-          : ""
-      }
-      ${
-        flights.length
-          ? flights.map((flight) => renderMyFlightCard(flight, selectedFlight)).join("")
-          : `<div class="empty-state">
-              <strong>No assigned flight duty</strong>
-              <p>Open time and same-day swap suggestions still appear below if they fit your qualifications.</p>
-            </div>`
-      }
-      <div class="subsection">
-        <div class="subsection__head">
-          <h4>Same-day swap opportunities</h4>
-          <span>${dayMatches.length}</span>
-        </div>
-        ${
-          dayMatches.length
-            ? dayMatches
-                .map((match) =>
-                  renderMiniOpportunity(
-                    `${match.flight.flightNumber} · ${match.owner.name}`,
-                    `${match.flight.departureAirport} to ${match.flight.arrivalAirport} · ${formatTimeRange(
-                      match.flight.departureTime,
-                      match.flight.arrivalTime,
-                    )}`,
-                    match.validation.eligible ? "available" : "conflict",
-                    match.validation.eligible
-                      ? "Request swap"
-                      : summarizeValidation(match.validation)[0] || "Conflict",
-                  ),
-                )
-                .join("")
-            : `<p class="muted">No same-day matches for the selected day yet.</p>`
-        }
-      </div>
-    </div>
-  `;
-}
-
-function renderMyFlightCard(flight, selectedFlight) {
-  const offered = isFlightOffered(state, flight.id);
-  return `
-    <article class="flight-card ${
-      selectedFlight && selectedFlight.id === flight.id ? "is-selected" : ""
-    }">
-      <div class="flight-card__head">
+    <article
+      class="roster-card tone-${tone}"
+      data-action="open-flight-sheet"
+      data-flight-id="${flight.id}"
+      data-context="calendar"
+      data-swipe-flight-id="${flight.id}"
+    >
+      <div class="roster-card__head">
         <div>
           <strong>${escapeHtml(flight.flightNumber)}</strong>
           <p>${escapeHtml(flight.departureAirport)} to ${escapeHtml(flight.arrivalAirport)}</p>
         </div>
-        <div class="chip-row">
-          ${createStatusPill("info", flight.aircraftType)}
-          ${createStatusPill("info", flight.base)}
-        </div>
+        ${renderStatusPill(summary.count ? "available" : "assigned", summary.count ? `${summary.count} swaps` : "Assigned")}
       </div>
-      <div class="flight-card__meta">
-        <span>Flight ${formatTimeRange(flight.departureTime, flight.arrivalTime)}</span>
-        <span>Duty ${formatTimeRange(flight.dutyStart, flight.dutyEnd)}</span>
-        <span>Duty ${formatHours(flight.totalDutyHours)}</span>
-        <span>Rest after ${flight.requiredRestHoursAfterDuty}h</span>
-        <span>${flight.tripLengthDays > 1 ? `Layover ${escapeHtml(flight.layoverLocation)}` : "Same-day trip"}</span>
+      <div class="roster-card__meta">
+        <span>${escapeHtml(formatTimeRange(flight.departureTime, flight.arrivalTime))}</span>
+        <span>Duty ${escapeHtml(formatHours(flight.totalDutyHours))}</span>
+        <span>${escapeHtml(flight.aircraftType)}</span>
       </div>
-      <div class="flight-card__actions">
-        <button type="button" class="button button--ghost button--small" data-action="select-my-flight" data-flight-id="${flight.id}">
-          Use for swap search
+      <div class="roster-card__footer">
+        <span>Swipe left to offer</span>
+        <button type="button" class="button button--ghost button--small" data-action="open-flight-sheet" data-flight-id="${flight.id}" data-context="calendar">
+          View
         </button>
+      </div>
+    </article>
+  `;
+}
+
+function renderMiniMatch(candidate) {
+  return `
+    <article class="mini-match">
+      <div>
+        <strong>${escapeHtml(candidate.flight.flightNumber)}</strong>
+        <p>${escapeHtml(candidate.owner.name)} · ${escapeHtml(candidate.flight.departureAirport)} to ${escapeHtml(candidate.flight.arrivalAirport)}</p>
+      </div>
+      <button
+        type="button"
+        class="button button--ghost button--small"
+        data-action="open-flight-sheet"
+        data-flight-id="${candidate.flight.id}"
+        data-context="swap-target"
+      >
+        Review
+      </button>
+    </article>
+  `;
+}
+
+function renderMarketplaceScreen() {
+  const visiblePosts = filterMarketplacePosts(getVisibleMarketplacePosts(state, "me"));
+  const hiddenCount = countHiddenMarketplacePosts(state, "me");
+
+  return `
+    <section class="screen-stack">
+      <section class="panel-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Open Time Feed</p>
+            <h3>Marketplace</h3>
+          </div>
+          ${renderStatusPill("info", `${hiddenCount} hidden`)}
+        </div>
+        <form class="filter-row" data-form="marketplace-filters">
+          <label class="filter-chip">
+            <span>Date</span>
+            <input type="date" name="date" value="${escapeHtml(state.marketplaceFilters.date)}" />
+          </label>
+          <label class="filter-chip">
+            <span>Base</span>
+            <select name="base">
+              ${renderOptions(["all"].concat(BASE_OPTIONS), state.marketplaceFilters.base, {
+                all: "All bases",
+              })}
+            </select>
+          </label>
+          <label class="filter-chip">
+            <span>Fleet</span>
+            <select name="fleet">
+              ${renderOptions(["all"].concat(FLEET_OPTIONS), state.marketplaceFilters.fleet, {
+                all: "All fleets",
+              })}
+            </select>
+          </label>
+          <label class="filter-chip">
+            <span>Time</span>
+            <select name="departureWindow">
+              ${renderOptions(["all", "morning", "afternoon", "evening"], state.marketplaceFilters.departureWindow, {
+                all: "Any",
+                morning: "Morning",
+                afternoon: "Afternoon",
+                evening: "Evening",
+              })}
+            </select>
+          </label>
+          <label class="filter-chip">
+            <span>Trip</span>
+            <select name="tripLength">
+              ${renderOptions(["all", "same-day", "layover"], state.marketplaceFilters.tripLength, {
+                all: "Any",
+                "same-day": "Same-day",
+                layover: "Layover",
+              })}
+            </select>
+          </label>
+          <label class="filter-chip filter-chip--search">
+            <span>Layover</span>
+            <input
+              type="text"
+              name="layover"
+              placeholder="Search airport"
+              value="${escapeHtml(state.marketplaceFilters.layover)}"
+            />
+          </label>
+          <button
+            type="button"
+            class="button button--ghost button--small filter-reset"
+            data-action="clear-marketplace-filters"
+          >
+            Clear
+          </button>
+        </form>
+      </section>
+
+      <section class="screen-stack">
+        ${
+          visiblePosts.length
+            ? visiblePosts.map(renderMarketplaceCard).join("")
+            : `<article class="panel-card empty-card">
+                <strong>No flights match the current filter set.</strong>
+                <p>Widen the feed by changing base, fleet, or time-of-day filters.</p>
+              </article>`
+        }
+      </section>
+    </section>
+  `;
+}
+
+function renderMarketplaceCard(entry) {
+  const post = entry.post;
+  const flight = entry.flight;
+  const owner = entry.owner;
+  const validation = entry.validation;
+  const badgeTone = validation.eligible ? "available" : "conflict";
+
+  return `
+    <article
+      class="market-card"
+      data-action="open-flight-sheet"
+      data-flight-id="${flight.id}"
+      data-context="marketplace"
+    >
+      <div class="market-card__head">
+        <div>
+          <strong>${escapeHtml(flight.flightNumber)}</strong>
+          <p>${escapeHtml(flight.departureAirport)} to ${escapeHtml(flight.arrivalAirport)} · ${escapeHtml(
+            flight.position === "Flight Attendant" ? "FA" : flight.position,
+          )}</p>
+        </div>
+        ${renderStatusPill(badgeTone, validation.eligible ? "Available" : "Conflict")}
+      </div>
+      <div class="market-card__meta">
+        <span>${escapeHtml(formatShortDate(flight.date))}</span>
+        <span>${escapeHtml(formatTimeRange(flight.departureTime, flight.arrivalTime))}</span>
+        <span>${escapeHtml(flight.aircraftType)}</span>
+        <span>${escapeHtml(owner.name)}</span>
+      </div>
+      <p class="market-card__note">
+        ${
+          validation.eligible
+            ? "Clean request path. This pickup keeps your roster legal."
+            : escapeHtml(validation.errors[0] || "Blocked by policy.")
+        }
+      </p>
+      <div class="market-card__footer">
         <button
           type="button"
-          class="button button--primary button--small"
-          data-action="offer-open-time"
+          class="button button--ghost button--small"
+          data-action="open-flight-sheet"
           data-flight-id="${flight.id}"
-          ${offered ? "disabled" : ""}
+          data-context="marketplace"
         >
-          ${offered ? "Listed in open time" : "Offer to open time"}
+          View details
         </button>
-      </div>
-    </article>
-  `;
-}
-
-function renderMiniOpportunity(title, detail, tone, summary) {
-  return `
-    <article class="mini-opportunity">
-      <div>
-        <strong>${escapeHtml(title)}</strong>
-        <p>${escapeHtml(detail)}</p>
-      </div>
-      <div class="mini-opportunity__side">
-        ${createStatusPill(tone, tone === "available" ? "Available" : "Conflict")}
-        <span>${escapeHtml(summary)}</span>
-      </div>
-    </article>
-  `;
-}
-
-function renderMarketplaceCard(posts, hiddenCount) {
-  return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Open time marketplace</p>
-        <h3>Filtered by qualification and policy</h3>
-      </div>
-      <span class="section-note">${hiddenCount} restricted posting${hiddenCount === 1 ? "" : "s"} hidden by airline/role permissions</span>
-    </div>
-    <form class="filter-form" data-form="marketplace-filters">
-      <label class="field">
-        <span>Date</span>
-        <input type="date" name="date" value="${escapeHtml(state.marketplaceFilters.date)}" />
-      </label>
-      <label class="field">
-        <span>Base</span>
-        <select name="base">
-          ${renderOptions(["all", ...BASE_OPTIONS], state.marketplaceFilters.base, {
-            all: "All bases",
-          })}
-        </select>
-      </label>
-      <label class="field">
-        <span>Aircraft</span>
-        <select name="fleet">
-          ${renderOptions(["all", ...FLEET_OPTIONS], state.marketplaceFilters.fleet, {
-            all: "All fleets",
-          })}
-        </select>
-      </label>
-      <label class="field">
-        <span>Departure</span>
-        <select name="departureWindow">
-          ${renderOptions(
-            ["all", "morning", "afternoon", "evening"],
-            state.marketplaceFilters.departureWindow,
-            {
-              all: "All windows",
-              morning: "Morning",
-              afternoon: "Afternoon",
-              evening: "Evening",
-            },
-          )}
-        </select>
-      </label>
-      <label class="field">
-        <span>Trip</span>
-        <select name="tripLength">
-          ${renderOptions(
-            ["all", "same-day", "layover"],
-            state.marketplaceFilters.tripLength,
-            {
-              all: "Any length",
-              "same-day": "Same-day",
-              layover: "Layover",
-            },
-          )}
-        </select>
-      </label>
-      <label class="field">
-        <span>Layover</span>
-        <input type="text" name="layover" placeholder="Airport code" value="${escapeHtml(
-          state.marketplaceFilters.layover,
-        )}" />
-      </label>
-    </form>
-    <div class="stack">
-      ${
-        posts.length
-          ? posts.map((entry) => renderOpenTimeCard(entry)).join("")
-          : `<div class="empty-state">
-              <strong>No matching open time duties</strong>
-              <p>Adjust the filters or change your rule settings to widen the recommendation pool.</p>
-            </div>`
-      }
-    </div>
-  `;
-}
-
-function renderOpenTimeCard({ post, flight, owner, validation }) {
-  const isMine = owner.id === "me";
-  const tone = isMine ? "pending" : validation.eligible ? "available" : "conflict";
-  const message = isMine
-    ? "Posted by you"
-    : validation.eligible
-      ? "Clear to request"
-      : validation.errors[0] || "Blocked by policy";
-
-  return `
-    <article class="opportunity-card">
-      <div class="opportunity-card__head">
-        <div>
-          <strong>${escapeHtml(flight.flightNumber)}</strong>
-          <p>${escapeHtml(flight.departureAirport)} to ${escapeHtml(flight.arrivalAirport)}</p>
-        </div>
-        <div class="chip-row">
-          ${createStatusPill(tone, tone === "available" ? "Available" : tone === "pending" ? "Listed" : "Conflict")}
-          ${createStatusPill("info", flight.aircraftType)}
-        </div>
-      </div>
-      <div class="opportunity-card__meta">
-        <span>${escapeHtml(formatShortDate(flight.date))}</span>
-        <span>Flight ${formatTimeRange(flight.departureTime, flight.arrivalTime)}</span>
-        <span>Duty ${formatHours(flight.totalDutyHours)}</span>
-        <span>${flight.tripLengthDays > 1 ? `Layover ${escapeHtml(flight.layoverLocation)}` : "Same-day trip"}</span>
-        <span>Base ${escapeHtml(flight.base)}</span>
-        <span>From ${escapeHtml(owner.name)}</span>
-      </div>
-      <p class="opportunity-card__note">${escapeHtml(message)}</p>
-      ${
-        !validation.eligible && !isMine
-          ? `<ul class="message-list">${validation.errors
-              .slice(0, 3)
-              .map((error) => `<li>${escapeHtml(error)}</li>`)
-              .join("")}</ul>`
-          : ""
-      }
-      <div class="flight-card__actions">
         <button
           type="button"
           class="button button--primary button--small"
           data-action="take-open-time"
           data-post-id="${post.id}"
-          ${validation.eligible && !isMine ? "" : "disabled"}
+          ${validation.eligible ? "" : "disabled"}
         >
-          ${post.bids.length ? `Request to take (${post.bids.length} bid${post.bids.length > 1 ? "s" : ""})` : "Request to take"}
+          Request This Flight
         </button>
       </div>
     </article>
   `;
 }
 
-function renderSwapCenter(selectedFlight, candidates, recommended) {
-  const myFlights = getUserFlights(state, "me");
+function renderRequestsScreen() {
+  const incoming = getIncomingRequestRows();
+  const outgoing = getOutgoingRequestRows();
+  const completed = getCompletedRequests();
+  let rows = incoming;
+
+  if (state.requestsTab === "outgoing") {
+    rows = outgoing;
+  }
+  if (state.requestsTab === "completed") {
+    rows = completed;
+  }
 
   return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Swap center</p>
-        <h3>One-tap swap proposals</h3>
+    <section class="screen-stack">
+      <section class="panel-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Request Center</p>
+            <h3>Incoming · Outgoing · Completed</h3>
+          </div>
+        </div>
+        <div class="segment-control">
+          ${renderSegment("incoming", "Incoming", incoming.length)}
+          ${renderSegment("outgoing", "Outgoing", outgoing.length)}
+          ${renderSegment("completed", "Completed", completed.length)}
+        </div>
+      </section>
+      ${
+        rows.length
+          ? rows
+              .map(function (row) {
+                return state.requestsTab === "completed"
+                  ? renderCompletedRequestCard(row)
+                  : renderPendingRequestCard(row, state.requestsTab);
+              })
+              .join("")
+          : `<article class="panel-card empty-card">
+              <strong>No ${escapeHtml(state.requestsTab)} requests right now.</strong>
+              <p>Your request traffic will show up here with side-by-side flight comparisons.</p>
+            </article>`
+      }
+    </section>
+  `;
+}
+
+function renderSegment(tab, label, count) {
+  return `
+    <button
+      type="button"
+      class="segment-control__button ${state.requestsTab === tab ? "is-active" : ""}"
+      data-action="set-requests-tab"
+      data-tab="${tab}"
+    >
+      <span>${escapeHtml(label)}</span>
+      <strong>${count}</strong>
+    </button>
+  `;
+}
+
+function renderPendingRequestCard(entry, mode) {
+  const yourFlight = mode === "incoming" ? entry.targetFlight : entry.requesterFlight;
+  const theirFlight = mode === "incoming" ? entry.requesterFlight : entry.targetFlight;
+  const otherParty = mode === "incoming" ? entry.requester : entry.targetUser;
+  const validation = entry.validation || { eligible: true, errors: [], requesterErrors: [], targetErrors: [] };
+  const messages = summarizeValidation(validation);
+
+  return `
+    <article class="panel-card request-card">
+      <div class="request-card__header">
+        <div>
+          <p class="eyebrow">${mode === "incoming" ? "Incoming" : "Outgoing"}</p>
+          <h3>${escapeHtml(otherParty.name)}</h3>
+        </div>
+        ${renderStatusPill("pending", "Pending")}
       </div>
-    </div>
-    <div class="subsection">
-      <div class="subsection__head">
-        <h4>Your flights</h4>
-        <span>${myFlights.length}</span>
+      <div class="request-compare">
+        ${renderFlightComparison("Your Flight", yourFlight)}
+        ${renderFlightComparison("Their Flight", theirFlight)}
       </div>
-      <div class="selector-row">
-        ${myFlights
-          .map(
-            (flight) => `
-              <button
-                type="button"
-                class="selector-chip ${
-                  selectedFlight && selectedFlight.id === flight.id ? "is-selected" : ""
-                }"
-                data-action="select-my-flight"
-                data-flight-id="${flight.id}"
-              >
-                <strong>${escapeHtml(flight.flightNumber)}</strong>
-                <span>${escapeHtml(formatShortDate(flight.date))}</span>
+      <p class="request-note">${escapeHtml(entry.request.notes || "Swap request generated from the quick flow.")}</p>
+      ${
+        messages.length && mode === "incoming"
+          ? `<div class="warning-inline">${escapeHtml(messages[0])}</div>`
+          : ""
+      }
+      <div class="request-actions">
+        ${
+          mode === "incoming"
+            ? `
+              <button type="button" class="button button--primary" data-action="accept-swap" data-request-id="${entry.request.id}">
+                Accept
               </button>
-            `,
-          )
-          .join("")}
-      </div>
-    </div>
-    ${
-      selectedFlight
-        ? `
-        <div class="stack">
-          <article class="flight-card flight-card--compact">
-            <div class="flight-card__head">
-              <div>
-                <strong>Selected: ${escapeHtml(selectedFlight.flightNumber)}</strong>
-                <p>${escapeHtml(selectedFlight.departureAirport)} to ${escapeHtml(
-                    selectedFlight.arrivalAirport,
-                  )} · ${escapeHtml(formatShortDate(selectedFlight.date))}</p>
-              </div>
-              ${createStatusPill("info", selectedFlight.aircraftType)}
-            </div>
-          </article>
-          <div class="subsection">
-            <div class="subsection__head">
-              <h4>Recommended swaps</h4>
-              <span>${recommended.length}</span>
-            </div>
-            ${
-              recommended.length
-                ? recommended
-                    .map((candidate) =>
-                      renderSwapCandidate(candidate, selectedFlight.id, true),
-                    )
-                    .join("")
-                : `<p class="muted">No recommendations available for this duty yet.</p>`
-            }
-          </div>
-          <div class="subsection">
-            <div class="subsection__head">
-              <h4>All candidates</h4>
-              <span>${candidates.length}</span>
-            </div>
-            ${
-              candidates.length
-                ? candidates.map((candidate) => renderSwapCandidate(candidate, selectedFlight.id)).join("")
-                : `<p class="muted">No swap candidates available for the selected flight.</p>`
-            }
-          </div>
-        </div>
-      `
-        : `<div class="empty-state">
-            <strong>Select one of your duties</strong>
-            <p>The swap center will rank legal alternatives by timing and route similarity.</p>
-          </div>`
-    }
-  `;
-}
-
-function renderSwapCandidate(candidate, selectedFlightId, compact = false) {
-  const messages = summarizeValidation(candidate.validation);
-  return `
-    <article class="opportunity-card ${compact ? "opportunity-card--compact" : ""}">
-      <div class="opportunity-card__head">
-        <div>
-          <strong>${escapeHtml(candidate.flight.flightNumber)}</strong>
-          <p>${escapeHtml(candidate.owner.name)} · ${escapeHtml(candidate.owner.base)} · ${escapeHtml(
-            candidate.owner.fleet,
-          )}</p>
-        </div>
-        <div class="chip-row">
-          ${createStatusPill(
-            candidate.validation.eligible ? "available" : "conflict",
-            candidate.validation.eligible ? "Legal" : "Blocked",
-          )}
-          ${createStatusPill("info", `Score ${Math.round(candidate.score)}`)}
-        </div>
-      </div>
-      <div class="opportunity-card__meta">
-        <span>${escapeHtml(formatShortDate(candidate.flight.date))}</span>
-        <span>${escapeHtml(candidate.flight.departureAirport)} to ${escapeHtml(candidate.flight.arrivalAirport)}</span>
-        <span>Flight ${formatTimeRange(candidate.flight.departureTime, candidate.flight.arrivalTime)}</span>
-        <span>${candidate.flight.tripLengthDays > 1 ? `Layover ${escapeHtml(candidate.flight.layoverLocation)}` : "Same-day trip"}</span>
-      </div>
-      ${
-        !candidate.validation.eligible
-          ? `<ul class="message-list">${messages
-              .slice(0, 3)
-              .map((message) => `<li>${escapeHtml(message)}</li>`)
-              .join("")}</ul>`
-          : ""
-      }
-      <div class="flight-card__actions">
-        <button
-          type="button"
-          class="button button--primary button--small"
-          data-action="request-swap"
-          data-flight-id="${candidate.flight.id}"
-          data-selected-flight-id="${selectedFlightId}"
-          ${candidate.validation.eligible ? "" : "disabled"}
-        >
-          Request swap
-        </button>
+              <button type="button" class="button button--ghost" data-action="decline-swap" data-request-id="${entry.request.id}">
+                Decline
+              </button>
+            `
+            : renderStatusPill("info", "Awaiting response")
+        }
       </div>
     </article>
   `;
 }
 
-function renderRequestsCard(incoming, outgoing) {
-  return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Approvals</p>
-        <h3>Incoming and outgoing requests</h3>
-      </div>
-    </div>
-    <div class="subsection">
-      <div class="subsection__head">
-        <h4>Needs your response</h4>
-        <span>${incoming.length}</span>
-      </div>
-      ${
-        incoming.length
-          ? incoming.map((entry) => renderIncomingRequest(entry)).join("")
-          : `<p class="muted">No incoming requests right now.</p>`
-      }
-    </div>
-    <div class="subsection">
-      <div class="subsection__head">
-        <h4>Sent by you</h4>
-        <span>${outgoing.length}</span>
-      </div>
-      ${
-        outgoing.length
-          ? outgoing
-              .map(
-                (entry) => `
-                  <article class="mini-opportunity">
-                    <div>
-                      <strong>${escapeHtml(entry.requesterFlight.flightNumber)} for ${escapeHtml(
-                        entry.targetFlight.flightNumber,
-                      )}</strong>
-                      <p>${escapeHtml(entry.targetUser.name)} · awaiting response</p>
-                    </div>
-                    <div class="mini-opportunity__side">
-                      ${createStatusPill("pending", "Pending")}
-                    </div>
-                  </article>
-                `,
-              )
-              .join("")
-          : `<p class="muted">You have not sent any swap requests yet.</p>`
-      }
-    </div>
-  `;
-}
+function renderCompletedRequestCard(entry) {
+  const yourFlight =
+    entry.request.requesterId === "me" ? entry.requesterFlight : entry.targetFlight;
+  const theirFlight =
+    entry.request.requesterId === "me" ? entry.targetFlight : entry.requesterFlight;
+  const tone = entry.request.status === "accepted" ? "available" : "conflict";
+  const label = entry.request.status === "accepted" ? "Accepted" : "Rejected";
 
-function renderIncomingRequest(entry) {
-  const messages = summarizeValidation(entry.validation);
   return `
-    <article class="request-card">
-      <div class="request-card__head">
+    <article class="panel-card request-card">
+      <div class="request-card__header">
         <div>
-          <strong>${escapeHtml(entry.requester.name)}</strong>
-          <p>${escapeHtml(entry.requesterFlight.flightNumber)} for ${escapeHtml(entry.targetFlight.flightNumber)}</p>
+          <p class="eyebrow">Completed</p>
+          <h3>${escapeHtml(formatShortDate(entry.request.createdAt.slice(0, 10)))}</h3>
         </div>
-        ${createStatusPill(
-          entry.validation.eligible ? "available" : "conflict",
-          entry.validation.eligible ? "Ready" : "Re-check needed",
-        )}
+        ${renderStatusPill(tone, label)}
       </div>
-      <p class="request-card__detail">${escapeHtml(entry.request.notes || "Swap request awaiting action.")}</p>
-      ${
-        messages.length
-          ? `<ul class="message-list">${messages
-              .slice(0, 3)
-              .map((message) => `<li>${escapeHtml(message)}</li>`)
-              .join("")}</ul>`
-          : ""
-      }
-      <div class="flight-card__actions">
-        <button type="button" class="button button--primary button--small" data-action="accept-swap" data-request-id="${entry.request.id}">
-          Accept
-        </button>
-        <button type="button" class="button button--ghost button--small" data-action="decline-swap" data-request-id="${entry.request.id}">
-          Decline
-        </button>
+      <div class="request-compare">
+        ${renderFlightComparison("Your Flight", yourFlight)}
+        ${renderFlightComparison("Their Flight", theirFlight)}
       </div>
     </article>
   `;
 }
 
-function renderNotificationCard(notifications) {
+function renderFlightComparison(label, flight) {
   return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Notifications</p>
-        <h3>Live crew updates</h3>
-      </div>
+    <div class="compare-card">
+      <span class="compare-card__label">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(flight.flightNumber)}</strong>
+      <p>${escapeHtml(flight.departureAirport)} to ${escapeHtml(flight.arrivalAirport)}</p>
+      <span>${escapeHtml(formatShortDate(flight.date))}</span>
+      <span>${escapeHtml(formatTimeRange(flight.departureTime, flight.arrivalTime))}</span>
     </div>
-    <div class="stack">
-      ${
-        notifications.length
-          ? notifications
-              .slice(0, 6)
-              .map(
-                (notification) => `
-                  <article class="notification-item ${notification.read ? "" : "is-unread"}">
-                    <div>
-                      <strong>${escapeHtml(notification.title)}</strong>
-                      <p>${escapeHtml(notification.body)}</p>
-                    </div>
-                    <div class="notification-item__side">
+  `;
+}
+
+function renderProfileScreen() {
+  const me = getCurrentUser();
+  const notifications = getNotifications(state).slice(0, 3);
+  const metrics = getScheduleMetrics(state, "me");
+
+  return `
+    <section class="screen-stack">
+      <section class="panel-card profile-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Crew Profile</p>
+            <h3>${escapeHtml(me.name)}</h3>
+          </div>
+          ${renderStatusPill("info", state.theme === "dark" ? "Dark mode" : "Light mode")}
+        </div>
+        <div class="profile-grid">
+          ${renderProfileStat("Role", me.role)}
+          ${renderProfileStat("Position", me.position)}
+          ${renderProfileStat("Base", me.base)}
+          ${renderProfileStat("Fleet", me.fleet)}
+          ${renderProfileStat("Airline", me.airline)}
+          ${renderProfileStat("Pending", String(metrics.pendingIncoming))}
+        </div>
+        <div class="profile-actions">
+          <button type="button" class="button button--ghost" data-action="toggle-theme">
+            Switch to ${state.theme === "dark" ? "light" : "dark"} mode
+          </button>
+          <button type="button" class="button button--ghost" data-action="reset-demo">
+            Reset demo
+          </button>
+        </div>
+      </section>
+
+      <section class="panel-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Alerts</p>
+            <h3>Recent notifications</h3>
+          </div>
+        </div>
+        ${
+          notifications.length
+            ? notifications
+                .map(function (notification) {
+                  return `
+                    <article class="alert-row ${notification.read ? "" : "is-unread"}">
+                      <div>
+                        <strong>${escapeHtml(notification.title)}</strong>
+                        <p>${escapeHtml(notification.body)}</p>
+                      </div>
                       <span>${escapeHtml(formatShortDate(notification.createdAt.slice(0, 10)))}</span>
-                      ${
-                        notification.read
-                          ? createStatusPill("info", "Read")
-                          : `<button type="button" class="button button--ghost button--small" data-action="mark-notification-read" data-notification-id="${notification.id}">Mark read</button>`
-                      }
-                    </div>
-                  </article>
-                `,
-              )
-              .join("")
-          : `<p class="muted">No notifications yet.</p>`
-      }
-    </div>
+                    </article>
+                  `;
+                })
+                .join("")
+            : `<p class="muted">No alerts yet.</p>`
+        }
+      </section>
+
+      <section class="panel-card">
+        <div class="panel-head panel-head--tight">
+          <div>
+            <p class="eyebrow">Demo Admin</p>
+            <h3>Legality settings</h3>
+          </div>
+        </div>
+        <form class="rules-grid" data-form="rules-form">
+          <label class="field">
+            <span>Min Rest</span>
+            <input type="number" min="8" max="24" step="1" name="minRestHours" value="${state.rules.minRestHours}" />
+          </label>
+          <label class="field">
+            <span>Duty / Day</span>
+            <input type="number" min="8" max="18" step="1" name="maxDutyHoursPerDay" value="${state.rules.maxDutyHoursPerDay}" />
+          </label>
+          <label class="field">
+            <span>7-Day Hours</span>
+            <input type="number" min="20" max="60" step="1" name="maxFlightHours7Days" value="${state.rules.maxFlightHours7Days}" />
+          </label>
+          <label class="field">
+            <span>28-Day Hours</span>
+            <input type="number" min="60" max="120" step="1" name="maxFlightHours28Days" value="${state.rules.maxFlightHours28Days}" />
+          </label>
+          <label class="field">
+            <span>Consecutive Days</span>
+            <input type="number" min="3" max="10" step="1" name="maxConsecutiveDays" value="${state.rules.maxConsecutiveDays}" />
+          </label>
+          <label class="field">
+            <span>Days Off</span>
+            <input type="number" min="4" max="15" step="1" name="minDaysOffPerMonth" value="${state.rules.minDaysOffPerMonth}" />
+          </label>
+          <label class="toggle-row">
+            <input type="checkbox" name="allowCrossBase" ${state.rules.allowCrossBase ? "checked" : ""} />
+            <span>Allow cross-base swaps</span>
+          </label>
+        </form>
+      </section>
+    </section>
   `;
 }
 
-function renderRulesCard() {
+function renderProfileStat(label, value) {
   return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Rules</p>
-        <h3>Legality & policy engine</h3>
-      </div>
-      <span class="section-note">Adjusting a rule instantly refreshes conflicts, recommendations, and approval outcomes.</span>
-    </div>
-    <form class="rule-form" data-form="rules-form">
-      <label class="field">
-        <span>Minimum rest (hours)</span>
-        <input type="number" min="8" max="24" step="1" name="minRestHours" value="${state.rules.minRestHours}" />
-      </label>
-      <label class="field">
-        <span>Max duty / day</span>
-        <input type="number" min="8" max="18" step="1" name="maxDutyHoursPerDay" value="${state.rules.maxDutyHoursPerDay}" />
-      </label>
-      <label class="field">
-        <span>Max flight hours / 7 days</span>
-        <input type="number" min="20" max="60" step="1" name="maxFlightHours7Days" value="${state.rules.maxFlightHours7Days}" />
-      </label>
-      <label class="field">
-        <span>Max flight hours / 28 days</span>
-        <input type="number" min="60" max="120" step="1" name="maxFlightHours28Days" value="${state.rules.maxFlightHours28Days}" />
-      </label>
-      <label class="field">
-        <span>Max consecutive days</span>
-        <input type="number" min="3" max="10" step="1" name="maxConsecutiveDays" value="${state.rules.maxConsecutiveDays}" />
-      </label>
-      <label class="field">
-        <span>Min days off / month</span>
-        <input type="number" min="4" max="15" step="1" name="minDaysOffPerMonth" value="${state.rules.minDaysOffPerMonth}" />
-      </label>
-      <label class="toggle">
-        <input type="checkbox" name="allowCrossBase" ${state.rules.allowCrossBase ? "checked" : ""} />
-        <span>Allow cross-base trades</span>
-      </label>
-    </form>
+    <article class="profile-stat">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </article>
   `;
 }
 
-function renderAuditCard() {
+function renderStatusPill(tone, label) {
+  return `<span class="status-pill tone-${tone}">${escapeHtml(label)}</span>`;
+}
+
+function renderBottomSheet() {
+  if (!state.sheet) {
+    return "";
+  }
+  if (state.sheet.type === "flight") {
+    return renderFlightSheet();
+  }
+  if (state.sheet.type === "swap-flow") {
+    return renderSwapSheet();
+  }
+  return "";
+}
+
+function renderFlightSheet() {
+  const flight = getFlightById(state, state.sheet.flightId);
+  if (!flight) {
+    return "";
+  }
+  const owner = getUserById(state, flight.assignedUserId);
+  const isMine = flight.assignedUserId === "me";
+  const marketPost = findOpenPostByFlightId(flight.id);
+  const openValidation = marketPost ? validateOpenTimeClaim(state, "me", flight.id) : null;
+  const swapSummary = isMine ? getRecommendedSwaps(state, "me", flight.id).filter(function (candidate) {
+    return candidate.validation.eligible;
+  }) : [];
+  const subtitle = `${flight.departureAirport} to ${flight.arrivalAirport}`;
+  const statusTone = isMine
+    ? "assigned"
+    : marketPost
+    ? openValidation && openValidation.eligible
+      ? "available"
+      : "conflict"
+    : "pending";
+  const statusLabel = isMine
+    ? "Assigned"
+    : marketPost
+    ? openValidation && openValidation.eligible
+      ? "Open Time"
+      : "Conflict"
+    : "Swap Target";
+  const layoverSummary = flight.tripLengthDays > 1
+    ? `${flight.tripLengthDays} days · ${flight.layoverLocation || "Layover"}`
+    : "Turn"
+  ;
+
   return `
-    <div class="section-head">
-      <div>
-        <p class="eyebrow">Audit log</p>
-        <h3>Every action is traceable</h3>
+    <section class="sheet-layer">
+      <button type="button" class="sheet-backdrop" data-action="close-sheet" aria-label="Close"></button>
+      <div class="sheet-panel">
+        <div class="sheet-handle"></div>
+        <div class="sheet-head">
+          <div>
+            <p class="eyebrow">Flight Detail</p>
+            <h3>${escapeHtml(flight.flightNumber)}</h3>
+            <p class="sheet-subtitle">${escapeHtml(subtitle)} · ${escapeHtml(formatShortDate(flight.date))}</p>
+          </div>
+          ${renderStatusPill(statusTone, statusLabel)}
+        </div>
+        <div class="sheet-grid">
+          <div class="sheet-metric">
+            <span>Flight</span>
+            <strong>${escapeHtml(formatTimeRange(flight.departureTime, flight.arrivalTime))}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Duty</span>
+            <strong>${escapeHtml(formatTimeRange(flight.dutyStart, flight.dutyEnd))}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Total duty</span>
+            <strong>${escapeHtml(formatHours(flight.totalDutyHours))}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Rest after duty</span>
+            <strong>${escapeHtml(formatHours(flight.requiredRestHoursAfterDuty))}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Aircraft</span>
+            <strong>${escapeHtml(flight.aircraftType)}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Trip</span>
+            <strong>${escapeHtml(layoverSummary)}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Crew</span>
+            <strong>${escapeHtml(owner ? owner.name : "Unavailable")}</strong>
+          </div>
+          <div class="sheet-metric">
+            <span>Status</span>
+            <strong>${escapeHtml(statusLabel)}</strong>
+          </div>
+        </div>
+        ${
+          !isMine && marketPost && openValidation && !openValidation.eligible
+            ? `<div class="warning-inline">${escapeHtml(openValidation.errors[0] || "Blocked by legality checks.")}</div>`
+            : ""
+        }
+        ${
+          !isMine && !marketPost
+            ? `<div class="inline-note">This duty is not in open time. Use a direct swap request instead.</div>`
+            : ""
+        }
+        ${
+          isMine && swapSummary.length
+            ? `<div class="sheet-recs">
+                <div class="subhead">
+                  <h4>Best swap matches</h4>
+                  <span>${swapSummary.length}</span>
+                </div>
+                ${swapSummary
+                  .slice(0, 3)
+                  .map(function (candidate) {
+                    return `<button
+                      type="button"
+                      class="quick-row"
+                      data-action="open-flight-sheet"
+                      data-flight-id="${candidate.flight.id}"
+                      data-context="swap-target"
+                    >
+                      <strong>${escapeHtml(candidate.flight.flightNumber)}</strong>
+                      <span>${escapeHtml(candidate.owner.name)} · ${escapeHtml(formatShortDate(candidate.flight.date))}</span>
+                    </button>`;
+                  })
+                  .join("")}
+              </div>`
+            : ""
+        }
+        <div class="sheet-actions">
+          ${
+            isMine
+              ? `
+                <button type="button" class="button button--primary" data-action="offer-open-time" data-flight-id="${flight.id}">
+                  Offer This Flight
+                </button>
+                <button type="button" class="button button--ghost" data-action="open-swap-flow" data-flight-id="${flight.id}" data-mode="choose-target">
+                  Request Swap
+                </button>
+              `
+              : `
+                ${
+                  marketPost
+                    ? `<button
+                        type="button"
+                        class="button button--primary"
+                        data-action="take-open-time"
+                        data-post-id="${marketPost.id}"
+                        ${openValidation.eligible ? "" : "disabled"}
+                      >
+                        Request This Flight
+                      </button>`
+                    : ""
+                }
+                <button type="button" class="button button--ghost" data-action="open-swap-flow" data-flight-id="${flight.id}" data-mode="choose-mine">
+                  Request Swap
+                </button>
+              `
+          }
+        </div>
       </div>
-    </div>
-    <div class="stack">
-      ${
-        state.auditLog.length
-          ? state.auditLog
-              .slice(0, 8)
-              .map(
-                (entry) => `
-                  <article class="log-item">
-                    <div>
-                      <strong>${escapeHtml(entry.action)}</strong>
-                      <p>${escapeHtml(entry.detail)}</p>
-                    </div>
-                    <span>${escapeHtml(formatShortDate(entry.time.slice(0, 10)))}</span>
-                  </article>
-                `,
-              )
-              .join("")
-          : `<p class="muted">Audit history will appear here.</p>`
-      }
-    </div>
+    </section>
   `;
 }
 
-function renderOptions(values, selectedValue, labels = {}) {
+function renderSwapSheet() {
+  const sheet = state.sheet;
+  if (!sheet || sheet.type !== "swap-flow") {
+    return "";
+  }
+
+  let title = "Choose a flight";
+  let intro = "Select the flight to use in this request.";
+  let cards = [];
+  let selectedKey = sheet.selectedFlightId || "";
+  let canSend = false;
+
+  if (sheet.mode === "choose-target") {
+    const sourceFlight = getFlightById(state, sheet.flightId);
+    const candidates = getSwapCandidates(state, "me", sheet.flightId)
+      .filter(function (candidate) {
+        return candidate.validation.eligible;
+      })
+      .slice(0, 8);
+
+    title = "Request Swap";
+    intro = sourceFlight
+      ? `Choose the flight you want in exchange for ${sourceFlight.flightNumber}.`
+      : intro;
+    cards = candidates.map(function (candidate) {
+      return {
+        id: candidate.flight.id,
+        title: candidate.flight.flightNumber,
+        subtitle: `${candidate.owner.name} · ${formatShortDate(candidate.flight.date)}`,
+        detail: `${candidate.flight.departureAirport} to ${candidate.flight.arrivalAirport} · ${formatTimeRange(
+          candidate.flight.departureTime,
+          candidate.flight.arrivalTime,
+        )}`,
+        tone: "available",
+      };
+    });
+    canSend = !!selectedKey;
+  } else {
+    const targetFlight = getFlightById(state, sheet.flightId);
+    const myChoices = getUserFlights(state, "me")
+      .map(function (flight) {
+        return {
+          flight: flight,
+          validation: validateSwapProposal(state, "me", flight.id, sheet.flightId),
+        };
+      })
+      .filter(function (entry) {
+        return entry.validation.eligible;
+      })
+      .slice(0, 8);
+
+    title = "Request Swap";
+    intro = targetFlight
+      ? `Pick one of your flights to offer for ${targetFlight.flightNumber}.`
+      : intro;
+    cards = myChoices.map(function (entry) {
+      return {
+        id: entry.flight.id,
+        title: entry.flight.flightNumber,
+        subtitle: `${formatShortDate(entry.flight.date)} · ${entry.flight.aircraftType}`,
+        detail: `${entry.flight.departureAirport} to ${entry.flight.arrivalAirport} · ${formatTimeRange(
+          entry.flight.departureTime,
+          entry.flight.arrivalTime,
+        )}`,
+        tone: "assigned",
+      };
+    });
+    canSend = !!selectedKey;
+  }
+
+  return `
+    <section class="sheet-layer">
+      <button type="button" class="sheet-backdrop" data-action="close-sheet" aria-label="Close"></button>
+      <div class="sheet-panel">
+        <div class="sheet-handle"></div>
+        <div class="sheet-head">
+          <div>
+            <p class="eyebrow">Swap Flow</p>
+            <h3>${escapeHtml(title)}</h3>
+            <p class="sheet-subtitle">${escapeHtml(intro)}</p>
+          </div>
+          ${renderStatusPill("pending", "3 taps max")}
+        </div>
+        <div class="choice-stack">
+          ${
+            cards.length
+              ? cards
+                  .map(function (card) {
+                    return `
+                      <button
+                        type="button"
+                        class="choice-card ${selectedKey === card.id ? "is-selected" : ""}"
+                        data-action="select-swap-choice"
+                        data-flight-id="${card.id}"
+                      >
+                        <div>
+                          <strong>${escapeHtml(card.title)}</strong>
+                          <p>${escapeHtml(card.subtitle)}</p>
+                        </div>
+                        <span>${escapeHtml(card.detail)}</span>
+                      </button>
+                    `;
+                  })
+                  .join("")
+              : `<article class="empty-card">
+                  <strong>No legal choices available.</strong>
+                  <p>The rule engine could not find a compliant swap path for this request.</p>
+                </article>`
+          }
+        </div>
+        <div class="sheet-actions">
+          <button type="button" class="button button--ghost" data-action="close-sheet">Cancel</button>
+          <button type="button" class="button button--primary" data-action="send-swap-request" ${canSend ? "" : "disabled"}>
+            Send Request
+          </button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderOptions(values, selectedValue, labels) {
   return values
-    .map(
-      (value) => `
-        <option value="${escapeHtml(value)}" ${
-          value === selectedValue ? "selected" : ""
-        }>
-          ${escapeHtml(labels[value] || value)}
-        </option>
-      `,
-    )
+    .map(function (value) {
+      return `<option value="${escapeHtml(value)}" ${
+        value === selectedValue ? "selected" : ""
+      }>${escapeHtml((labels && labels[value]) || value)}</option>`;
+    })
     .join("");
 }
 
@@ -1182,11 +1373,9 @@ function syncOnboardingVisibility() {
   const roleSelect = root.querySelector('form[data-form="onboarding"] select[name="role"]');
   const positionField = root.querySelector("[data-position-field]");
   const positionSelect = root.querySelector('form[data-form="onboarding"] select[name="position"]');
-
   if (!roleSelect || !positionField || !positionSelect) {
     return;
   }
-
   const isPilot = roleSelect.value === "Pilot";
   positionField.classList.toggle("is-hidden", !isPilot);
   positionSelect.disabled = !isPilot;
@@ -1198,27 +1387,7 @@ function handleClick(event) {
     return;
   }
 
-  const { action } = actionTarget.dataset;
-
-  if (action === "select-date") {
-    state.selectedDate = actionTarget.dataset.date;
-    commit();
-    return;
-  }
-
-  if (action === "toggle-calendar") {
-    state.calendarMode = actionTarget.dataset.mode;
-    commit();
-    return;
-  }
-
-  if (action === "prev-month" || action === "next-month") {
-    const direction = action === "next-month" ? 1 : -1;
-    state.currentMonth = shiftMonth(state.currentMonth, direction);
-    state.selectedDate = `${state.currentMonth}-01`;
-    commit();
-    return;
-  }
+  const action = actionTarget.dataset.action;
 
   if (action === "dismiss-banner") {
     state.banner = null;
@@ -1226,13 +1395,83 @@ function handleClick(event) {
     return;
   }
 
-  if (action === "select-my-flight") {
-    state.selectedMyFlightId = actionTarget.dataset.flightId;
-    const selectedFlight = getSelectedFlight();
-    if (selectedFlight) {
-      state.selectedDate = selectedFlight.date;
-    }
+  if (action === "set-tab") {
+    state.activeTab = actionTarget.dataset.tab;
+    state.sheet = null;
     commit();
+    return;
+  }
+
+  if (action === "set-requests-tab") {
+    state.requestsTab = actionTarget.dataset.tab;
+    commit();
+    return;
+  }
+
+  if (action === "clear-marketplace-filters") {
+    state.marketplaceFilters = createBlankState().marketplaceFilters;
+    commit();
+    return;
+  }
+
+  if (action === "select-date") {
+    state.selectedDate = actionTarget.dataset.date;
+    commit();
+    return;
+  }
+
+  if (action === "prev-month" || action === "next-month") {
+    state.currentMonth = shiftMonth(state.currentMonth, action === "next-month" ? 1 : -1);
+    state.selectedDate = `${state.currentMonth}-01`;
+    commit();
+    return;
+  }
+
+  if (action === "jump-today") {
+    const today = new Date();
+    state.currentMonth = toIsoDate(today).slice(0, 7);
+    state.selectedDate = toIsoDate(today);
+    commit();
+    return;
+  }
+
+  if (action === "open-flight-sheet") {
+    state.sheet = {
+      type: "flight",
+      flightId: actionTarget.dataset.flightId,
+      context: actionTarget.dataset.context || "calendar",
+    };
+    commit();
+    return;
+  }
+
+  if (action === "close-sheet") {
+    state.sheet = null;
+    commit();
+    return;
+  }
+
+  if (action === "open-swap-flow") {
+    state.sheet = {
+      type: "swap-flow",
+      flightId: actionTarget.dataset.flightId,
+      mode: actionTarget.dataset.mode,
+      selectedFlightId: "",
+    };
+    commit();
+    return;
+  }
+
+  if (action === "select-swap-choice") {
+    if (state.sheet && state.sheet.type === "swap-flow") {
+      state.sheet.selectedFlightId = actionTarget.dataset.flightId;
+      commit();
+    }
+    return;
+  }
+
+  if (action === "send-swap-request") {
+    handleSendSwapRequest();
     return;
   }
 
@@ -1246,11 +1485,6 @@ function handleClick(event) {
     return;
   }
 
-  if (action === "request-swap") {
-    handleRequestSwap(actionTarget.dataset.flightId);
-    return;
-  }
-
   if (action === "accept-swap") {
     handleAcceptSwap(actionTarget.dataset.requestId);
     return;
@@ -1261,14 +1495,9 @@ function handleClick(event) {
     return;
   }
 
-  if (action === "mark-notification-read") {
-    const notification = state.notifications.find(
-      (item) => item.id === actionTarget.dataset.notificationId,
-    );
-    if (notification) {
-      notification.read = true;
-      commit();
-    }
+  if (action === "toggle-theme") {
+    state.theme = state.theme === "dark" ? "light" : "dark";
+    commit();
     return;
   }
 
@@ -1276,18 +1505,6 @@ function handleClick(event) {
     window.localStorage.removeItem(STORAGE_KEY);
     state = createBlankState();
     render();
-    return;
-  }
-
-  if (action === "jump-next-flight") {
-    const nextFlight =
-      getUserFlights(state, "me").find((flight) => flight.date >= toIsoDate(new Date())) ||
-      getUserFlights(state, "me")[0];
-    if (nextFlight) {
-      state.selectedMyFlightId = nextFlight.id;
-      state.selectedDate = nextFlight.date;
-      commit();
-    }
   }
 }
 
@@ -1301,29 +1518,17 @@ function handleSubmit(event) {
 
   if (form.dataset.form === "onboarding") {
     const values = new FormData(form);
-    const role = values.get("role");
-    const profile = {
-      role,
-      position:
-        role === "Pilot"
-          ? String(values.get("position") || "Captain")
-          : "Flight Attendant",
+    const role = String(values.get("role") || "Pilot");
+    state = createSeedState({
+      role: role,
+      position: role === "Pilot" ? String(values.get("position") || "Captain") : "Flight Attendant",
       base: String(values.get("base") || "POS"),
       fleet: String(values.get("fleet") || "A320"),
-      airline: String(values.get("airline") || "Caribbean Connect").trim(),
-      employeeId: String(values.get("employeeId") || "").trim(),
-      email: String(values.get("email") || "").trim(),
-    };
-
-    state = createSeedState(profile);
+      airline: String(values.get("airline") || "Caribbean Connect"),
+      employeeId: String(values.get("employeeId") || ""),
+      email: String(values.get("email") || ""),
+    });
     commit();
-  }
-}
-
-function handleInput(event) {
-  const form = event.target.closest("form[data-form]");
-  if (form && form.dataset.form === "onboarding") {
-    syncOnboardingVisibility();
   }
 }
 
@@ -1342,41 +1547,57 @@ function handleChange(event) {
   if (form.dataset.form === "marketplace-filters") {
     state.marketplaceFilters = {
       ...state.marketplaceFilters,
-      [event.target.name]:
-        event.target.type === "checkbox" ? event.target.checked : event.target.value,
+      [event.target.name]: event.target.value,
     };
     commit();
+    return;
   }
 
   if (form.dataset.form === "rules-form") {
-    updateRulesFromForm(form);
+    state.rules = {
+      ...state.rules,
+      minRestHours: Number(form.elements.minRestHours.value),
+      maxDutyHoursPerDay: Number(form.elements.maxDutyHoursPerDay.value),
+      maxFlightHours7Days: Number(form.elements.maxFlightHours7Days.value),
+      maxFlightHours28Days: Number(form.elements.maxFlightHours28Days.value),
+      maxConsecutiveDays: Number(form.elements.maxConsecutiveDays.value),
+      minDaysOffPerMonth: Number(form.elements.minDaysOffPerMonth.value),
+      allowCrossBase: form.elements.allowCrossBase.checked,
+    };
+    setBanner("info", "Rule settings updated. The roster and swap suggestions were recalculated.");
+    commit();
   }
 }
 
-function updateRulesFromForm(form) {
-  state.rules = {
-    ...state.rules,
-    minRestHours: Number(form.elements.minRestHours.value),
-    maxDutyHoursPerDay: Number(form.elements.maxDutyHoursPerDay.value),
-    maxFlightHours7Days: Number(form.elements.maxFlightHours7Days.value),
-    maxFlightHours28Days: Number(form.elements.maxFlightHours28Days.value),
-    maxConsecutiveDays: Number(form.elements.maxConsecutiveDays.value),
-    minDaysOffPerMonth: Number(form.elements.minDaysOffPerMonth.value),
-    allowCrossBase: form.elements.allowCrossBase.checked,
+function handleTouchStart(event) {
+  const card = event.target.closest("[data-swipe-flight-id]");
+  if (!card || !event.changedTouches || !event.changedTouches.length) {
+    return;
+  }
+  swipeState = {
+    flightId: card.dataset.swipeFlightId,
+    startX: event.changedTouches[0].clientX,
   };
-  setBanner(
-    "info",
-    "Rule settings updated. All swaps and open-time matches have been recalculated.",
-  );
-  commit();
 }
 
-function handleOfferOpenTime(flightId) {
+function handleTouchEnd(event) {
+  if (!swipeState || !event.changedTouches || !event.changedTouches.length) {
+    return;
+  }
+  const deltaX = event.changedTouches[0].clientX - swipeState.startX;
+  const flightId = swipeState.flightId;
+  swipeState = null;
+
+  if (deltaX < -70) {
+    handleOfferOpenTime(flightId, true);
+  }
+}
+
+function handleOfferOpenTime(flightId, fromSwipe) {
   const flight = getFlightById(state, flightId);
   if (!flight) {
     return;
   }
-
   if (isFlightOffered(state, flightId)) {
     setBanner("info", `${flight.flightNumber} is already listed in open time.`);
     commit();
@@ -1385,7 +1606,7 @@ function handleOfferOpenTime(flightId) {
 
   state.openTimePosts.unshift({
     id: `ot-${Date.now()}`,
-    flightId,
+    flightId: flightId,
     postedByUserId: "me",
     status: "open",
     bids: [],
@@ -1393,21 +1614,16 @@ function handleOfferOpenTime(flightId) {
   });
 
   addAudit("Open time posted", `You released ${flight.flightNumber} to the marketplace.`);
-  addNotification(
-    "system",
-    "Flight posted to open time",
-    `${flight.flightNumber} is now available for qualified crew to request.`,
-    flightId,
-  );
-  setBanner(
-    "success",
-    `${flight.flightNumber} was added to open time. Qualified crew can now request it.`,
-  );
+  addNotification("system", "Flight posted", `${flight.flightNumber} is now in open time.`, flightId);
+  state.sheet = null;
+  setBanner("success", fromSwipe ? `${flight.flightNumber} offered with a quick swipe.` : `${flight.flightNumber} was added to open time.`);
   commit();
 }
 
 function handleTakeOpenTime(postId) {
-  const post = state.openTimePosts.find((item) => item.id === postId);
+  const post = state.openTimePosts.find(function (item) {
+    return item.id === postId;
+  });
   if (!post) {
     return;
   }
@@ -1417,7 +1633,7 @@ function handleTakeOpenTime(postId) {
   const validation = validateOpenTimeClaim(state, "me", post.flightId);
 
   if (!flight || !owner) {
-    setBanner("conflict", "This open time posting is no longer available.");
+    setBanner("conflict", "This open-time listing is no longer available.");
     commit();
     return;
   }
@@ -1428,71 +1644,66 @@ function handleTakeOpenTime(postId) {
     return;
   }
 
-  const existingBid = post.bids.find((bid) => bid.bidderId === "me");
+  const existingBid = post.bids.find(function (bid) {
+    return bid.bidderId === "me";
+  });
   if (existingBid) {
     setBanner("info", "You already requested this flight.");
     commit();
     return;
   }
 
-  const bid = {
+  post.bids.push({
     id: `bid-${Date.now()}`,
     bidderId: "me",
     requestedAt: nowLocalDateTime(),
     status: post.bids.length ? "pending" : "accepted",
-  };
-
-  post.bids.push(bid);
+  });
 
   if (post.bids.length === 1) {
     flight.assignedUserId = "me";
     post.status = "filled";
-    addAudit(
-      "Open time awarded",
-      `You picked up ${flight.flightNumber} from ${owner.name}.`,
-    );
-    addNotification(
-      "market_match",
-      "Open time confirmed",
-      `${flight.flightNumber} was assigned to your roster after a legality check.`,
-      post.id,
-    );
-    setBanner(
-      "success",
-      `${flight.flightNumber} was added to your schedule and passed all legality checks.`,
-    );
+    addAudit("Open time awarded", `You picked up ${flight.flightNumber} from ${owner.name}.`);
+    addNotification("market_match", "Flight awarded", `${flight.flightNumber} was added to your roster.`, post.id);
+    setBanner("success", `${flight.flightNumber} passed legality checks and is now on your schedule.`);
   } else {
-    addAudit("Open time requested", `You placed a pickup request for ${flight.flightNumber}.`);
-    addNotification(
-      "market_match",
-      "Open time request sent",
-      `${flight.flightNumber} now has multiple bids. Your request is pending ranking.`,
-      post.id,
-    );
-    setBanner(
-      "info",
-      `Your request for ${flight.flightNumber} is pending because other bids already exist.`,
-    );
+    addAudit("Open time requested", `You requested ${flight.flightNumber}.`);
+    addNotification("market_match", "Request pending", `${flight.flightNumber} now has multiple bids.`, post.id);
+    setBanner("info", `Your request for ${flight.flightNumber} is pending ranking.`);
   }
 
   ensureSelectedFlight();
+  state.sheet = null;
   commit();
 }
 
-function handleRequestSwap(targetFlightId) {
-  const selectedFlight = getSelectedFlight();
-  if (!selectedFlight) {
-    setBanner("conflict", "Choose one of your flights before sending a swap request.");
-    commit();
+function handleSendSwapRequest() {
+  if (!state.sheet || state.sheet.type !== "swap-flow" || !state.sheet.selectedFlightId) {
     return;
   }
 
+  let sourceFlightId = "";
+  let targetFlightId = "";
+
+  if (state.sheet.mode === "choose-target") {
+    sourceFlightId = state.sheet.flightId;
+    targetFlightId = state.sheet.selectedFlightId;
+  } else {
+    sourceFlightId = state.sheet.selectedFlightId;
+    targetFlightId = state.sheet.flightId;
+  }
+
+  submitSwapRequest(sourceFlightId, targetFlightId);
+}
+
+function submitSwapRequest(sourceFlightId, targetFlightId) {
+  const sourceFlight = getFlightById(state, sourceFlightId);
   const targetFlight = getFlightById(state, targetFlightId);
   const targetUser = targetFlight ? getUserById(state, targetFlight.assignedUserId) : null;
-  const validation = validateSwapProposal(state, "me", selectedFlight.id, targetFlightId);
+  const validation = validateSwapProposal(state, "me", sourceFlightId, targetFlightId);
 
-  if (!targetFlight || !targetUser) {
-    setBanner("conflict", "Swap target is no longer available.");
+  if (!sourceFlight || !targetFlight || !targetUser) {
+    setBanner("conflict", "The selected swap path is no longer available.");
     commit();
     return;
   }
@@ -1503,13 +1714,15 @@ function handleRequestSwap(targetFlightId) {
     return;
   }
 
-  const duplicate = state.swapRequests.find(
-    (request) =>
+  const duplicate = state.swapRequests.find(function (request) {
+    return (
       request.status === "pending" &&
       request.requesterId === "me" &&
-      request.requesterFlightId === selectedFlight.id &&
-      request.targetFlightId === targetFlightId,
-  );
+      request.requesterFlightId === sourceFlightId &&
+      request.targetFlightId === targetFlightId
+    );
+  });
+
   if (duplicate) {
     setBanner("info", "That swap request is already pending.");
     commit();
@@ -1520,32 +1733,24 @@ function handleRequestSwap(targetFlightId) {
     id: `sr-${Date.now()}`,
     requesterId: "me",
     targetUserId: targetUser.id,
-    requesterFlightId: selectedFlight.id,
-    targetFlightId,
+    requesterFlightId: sourceFlightId,
+    targetFlightId: targetFlightId,
     status: "pending",
     createdAt: nowLocalDateTime(),
-    notes: "Generated from the swap center.",
+    notes: "Sent from the quick swap flow.",
   });
 
-  addAudit(
-    "Swap request sent",
-    `You proposed ${selectedFlight.flightNumber} for ${targetFlight.flightNumber}.`,
-  );
-  addNotification(
-    "swap_request",
-    "Swap request submitted",
-    `${selectedFlight.flightNumber} is waiting on ${targetUser.name} to respond.`,
-    targetFlightId,
-  );
-  setBanner(
-    "success",
-    `Swap request sent for ${selectedFlight.flightNumber} and ${targetFlight.flightNumber}.`,
-  );
+  addAudit("Swap request sent", `You proposed ${sourceFlight.flightNumber} for ${targetFlight.flightNumber}.`);
+  addNotification("swap_request", "Swap request sent", `${sourceFlight.flightNumber} is waiting on ${targetUser.name}.`, targetFlightId);
+  state.sheet = null;
+  setBanner("success", `Swap request sent for ${sourceFlight.flightNumber} and ${targetFlight.flightNumber}.`);
   commit();
 }
 
 function handleAcceptSwap(requestId) {
-  const request = state.swapRequests.find((entry) => entry.id === requestId);
+  const request = state.swapRequests.find(function (entry) {
+    return entry.id === requestId;
+  });
   if (!request) {
     return;
   }
@@ -1566,70 +1771,34 @@ function handleAcceptSwap(requestId) {
   const requesterFlight = getFlightById(state, request.requesterFlightId);
   const targetFlight = getFlightById(state, request.targetFlightId);
   const requester = getUserById(state, request.requesterId);
-
   if (!requesterFlight || !targetFlight || !requester) {
-    setBanner("conflict", "Swap data became unavailable before approval.");
+    setBanner("conflict", "Swap data became unavailable.");
     commit();
     return;
   }
 
-  const requesterId = requesterFlight.assignedUserId;
-  const targetUserId = targetFlight.assignedUserId;
-  requesterFlight.assignedUserId = targetUserId;
-  targetFlight.assignedUserId = requesterId;
+  const requesterOwnerId = requesterFlight.assignedUserId;
+  const targetOwnerId = targetFlight.assignedUserId;
+  requesterFlight.assignedUserId = targetOwnerId;
+  targetFlight.assignedUserId = requesterOwnerId;
   request.status = "accepted";
 
-  state.notifications.forEach((notification) => {
-    if (notification.relatedId === request.id) {
-      notification.read = true;
-    }
-  });
-
-  addAudit(
-    "Swap approved",
-    `${requester.name} exchanged ${requesterFlight.flightNumber} with your ${targetFlight.flightNumber}.`,
-  );
-  addNotification(
-    "swap_request",
-    "Swap approved",
-    `${requesterFlight.flightNumber} and ${targetFlight.flightNumber} were exchanged after legality re-validation.`,
-    request.id,
-  );
-  ensureSelectedFlight();
-  setBanner(
-    "success",
-    `Swap approved. ${requesterFlight.flightNumber} and ${targetFlight.flightNumber} were exchanged successfully.`,
-  );
+  addAudit("Swap approved", `${requester.name} exchanged ${requesterFlight.flightNumber} with your ${targetFlight.flightNumber}.`);
+  addNotification("swap_request", "Swap approved", `${requesterFlight.flightNumber} and ${targetFlight.flightNumber} were exchanged.`, request.id);
+  setBanner("success", "Swap approved and revalidated successfully.");
   commit();
 }
 
 function handleDeclineSwap(requestId) {
-  const request = state.swapRequests.find((entry) => entry.id === requestId);
+  const request = state.swapRequests.find(function (entry) {
+    return entry.id === requestId;
+  });
   if (!request) {
     return;
   }
-
-  const targetFlight = getFlightById(state, request.targetFlightId);
-
   request.status = "rejected";
-  state.notifications.forEach((notification) => {
-    if (notification.relatedId === request.id) {
-      notification.read = true;
-    }
-  });
-
-  addAudit(
-    "Swap declined",
-    `You declined a pending request for ${
-      targetFlight ? targetFlight.flightNumber : "the selected duty"
-    }.`,
-  );
-  addNotification(
-    "swap_request",
-    "Swap declined",
-    "A pending swap request was declined and the original rosters remain unchanged.",
-    request.id,
-  );
+  addAudit("Swap declined", "You declined a pending swap request.");
+  addNotification("swap_request", "Swap declined", "The original flights remain unchanged.", request.id);
   setBanner("info", "Swap request declined.");
   commit();
 }
