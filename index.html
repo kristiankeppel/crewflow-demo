@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CrewFlow | Crew Schedule Exchange</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Crew Schedule Exchange</p>
+          <h1>CrewFlow</h1>
+        </div>
+        <p class="topbar-copy">
+          Responsive demo for crew schedules, open time, swap validation, and
+          rule-driven approvals.
+        </p>
+      </header>
+      <main id="app" class="app-root" aria-live="polite"></main>
+      <noscript>
+        <section class="card">
+          <p class="eyebrow">Preview blocked</p>
+          <h2>JavaScript is turned off in Safari.</h2>
+          <p>Enable JavaScript for Safari to load the interactive CrewFlow preview.</p>
+        </section>
+      </noscript>
+    </div>
+    <script>
+      (function () {
+        var app = document.getElementById("app");
+        if (!app) {
+          return;
+        }
+
+        function showBootMessage(title, body) {
+          app.innerHTML =
+            '<section class="card"><p class="eyebrow">Preview status</p><h2>' +
+            title +
+            "</h2><p>" +
+            body +
+            "</p></section>";
+        }
+
+        window.addEventListener("error", function (event) {
+          showBootMessage(
+            "A browser error stopped the preview.",
+            (event && event.message) || "Unknown JavaScript error.",
+          );
+        });
+
+        showBootMessage(
+          "Loading interactive preview...",
+          "If this message stays on screen, Safari is blocking one of the page scripts.",
+        );
+      })();
+    </script>
+    <script src="./src/data.js"></script>
+    <script src="./src/engine.js"></script>
+    <script src="./src/app.js"></script>
+  </body>
+</html>
