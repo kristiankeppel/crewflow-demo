@@ -43,21 +43,65 @@
             "</p></section>";
         }
 
-        window.addEventListener("error", function (event) {
-          showBootMessage(
-            "A browser error stopped the preview.",
-            (event && event.message) || "Unknown JavaScript error.",
-          );
-        });
+        function loadScript(src, label, verify) {
+          return new Promise(function (resolve, reject) {
+            var script = document.createElement("script");
+            script.src = src;
+            script.async = false;
+            script.onload = function () {
+              try {
+                if (verify && !verify()) {
+                  reject(
+                    new Error(label + " loaded, but the expected app object was missing."),
+                  );
+                  return;
+                }
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            };
+            script.onerror = function () {
+              reject(new Error(label + " failed to load from " + src + "."));
+            };
+            document.body.appendChild(script);
+          });
+        }
+
+        window.addEventListener(
+          "error",
+          function (event) {
+            showBootMessage(
+              "A browser error stopped the preview.",
+              (event && event.message) || "Unknown JavaScript error.",
+            );
+          },
+          true,
+        );
 
         showBootMessage(
           "Loading interactive preview...",
-          "If this message stays on screen, Safari is blocking one of the page scripts.",
+          "Checking each app script now.",
         );
+
+        loadScript("/src/data.js", "Data layer", function () {
+          return !!window.CrewFlowData;
+        })
+          .then(function () {
+            return loadScript("/src/engine.js", "Legality engine", function () {
+              return !!window.CrewFlowEngine;
+            });
+          })
+          .then(function () {
+            return loadScript("/src/app.js", "App bootstrap");
+          })
+          .catch(function (error) {
+            showBootMessage(
+              "A browser error stopped the preview.",
+              (error && error.message) || "Unknown loader error.",
+            );
+          });
       })();
     </script>
-    <script src="./src/data.js"></script>
-    <script src="./src/engine.js"></script>
-    <script src="./src/app.js"></script>
   </body>
 </html>
