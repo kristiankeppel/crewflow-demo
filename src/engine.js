@@ -1,5 +1,4 @@
-const { DEFAULT_RULES } = window.CrewFlowData;
-
+(function () {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function toDateOnly(value) {
@@ -501,3 +500,4 @@ window.CrewFlowEngine = {
   getNotifications,
   summarizeValidation,
 };
+})();

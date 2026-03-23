@@ -1,3 +1,4 @@
+(function () {
 const {
   BASE_OPTIONS,
   DEFAULT_RULES,
@@ -1632,3 +1633,4 @@ function handleDeclineSwap(requestId) {
   setBanner("info", "Swap request declined.");
   commit();
 }
+})();

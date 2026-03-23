@@ -1,3 +1,4 @@
+(function () {
 const ROLE_OPTIONS = ["Pilot", "Flight Attendant"];
 const PILOT_POSITIONS = ["Captain", "First Officer"];
 const BASE_OPTIONS = ["POS", "JFK", "LHR", "MIA", "YYZ", "BGI"];
@@ -607,3 +608,4 @@ window.CrewFlowData = {
   createBlankState,
   createSeedState,
 };
+})();
